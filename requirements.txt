@@ -1,0 +1,23 @@
+# Core LangChain Libraries
+langchain
+langchain-core
+
+# IBM Watsonx Integration
+langchain-ibm
+
+# OpenAI Embeddings (If you're using them)
+langchain-openai
+openai
+GeminiEmbeddings
+
+# Community-Supported Loaders and Vectorstores
+langchain-community
+faiss-cpu  # or faiss-gpu if you have a compatible GPU
+
+# Web Loading (If you're fetching content from the web)
+beautifulsoup4
+requests
+tiktoken
+
+# Environment Variable Management (If you're using .env files)
+python-dotenv
