@@ -8,7 +8,7 @@ langchain-ibm
 # OpenAI Embeddings (If you're using them)
 langchain-openai
 openai
-GeminiEmbeddings
+langchain_google_genai
 
 # Community-Supported Loaders and Vectorstores
 langchain-community
@@ -21,3 +21,9 @@ tiktoken
 
 # Environment Variable Management (If you're using .env files)
 python-dotenv
+
+retry_requests
+flask
+flask_cors
+requests_cache
+anthropic
