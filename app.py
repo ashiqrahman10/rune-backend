@@ -1,8 +1,10 @@
 from dotenv import load_dotenv
 load_dotenv()
 import os
+import pickle
 import pymupdf  # Alternative import for PyMuPDF
 import requests
+import sqlite3
 from langchain_ibm import WatsonxLLM, WatsonxEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain 
@@ -14,8 +16,6 @@ from langchain_core.prompts import MessagesPlaceholder
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
-from langchain import hub
-from langchain.agents import AgentExecutor, create_react_agent, load_tools
 
 parameters = {
     "decoding_method": "greedy",
@@ -29,7 +29,24 @@ Wx_Api_Key = os.getenv("WX_API_KEY", None)
 Project_ID = os.getenv("PROJECT_ID", None)
 cloud_url = os.getenv("IBM_CLOUD_URL", None)
 
-vector_stores = {}
+db_conn = sqlite3.connect('vector_stores.db')
+cursor = db_conn.cursor()
+
+# Create tables for storing vector stores and chat history
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS vector_stores (
+    uid TEXT PRIMARY KEY,
+    documents BLOB
+)
+''')
+
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS chat_history (
+    uid TEXT,
+    role TEXT,
+    message TEXT
+)
+''')
 
 def get_documents_from_web(url):
     loader = WebBaseLoader(url)
@@ -85,7 +102,22 @@ def create_db(docs):
     vectorStore = FAISS.from_documents(docs, embedding=embedding)
     return vectorStore
 
-def create_chain(vectorStore):
+def save_vector_store(uid, docs):
+    docs_blob = pickle.dumps(docs)
+    cursor.execute('REPLACE INTO vector_stores (uid, documents) VALUES (?, ?)', (uid, docs_blob))
+    db_conn.commit()
+
+def load_vector_store(uid):
+    cursor.execute('SELECT documents FROM vector_stores WHERE uid=?', (uid,))
+    row = cursor.fetchone()
+    if row:
+        docs_blob = row[0]
+        docs = pickle.loads(docs_blob)
+        return docs
+    return None
+
+def create_chain_from_docs(docs):
+    vectorStore = create_db(docs)
     model = WatsonxLLM(
         model_id="meta-llama/llama-3-70b-instruct",
         url=cloud_url,
@@ -134,22 +166,37 @@ def process_chat(chain, question, chat_history):
     })
     return response["answer"]
 
+def save_chat_history(uid, chat_history):
+    cursor.execute('DELETE FROM chat_history WHERE uid=?', (uid,))
+    for message in chat_history:
+        role = 'human' if isinstance(message, HumanMessage) else 'ai'
+        cursor.execute('INSERT INTO chat_history (uid, role, message) VALUES (?, ?, ?)', (uid, role, message.content))
+    db_conn.commit()
+
+def load_chat_history(uid):
+    cursor.execute('SELECT role, message FROM chat_history WHERE uid=?', (uid,))
+    rows = cursor.fetchall()
+    chat_history = []
+    for role, message in rows:
+        if role == 'human':
+            chat_history.append(HumanMessage(content=message))
+        else:
+            chat_history.append(AIMessage(content=message))
+    return chat_history
+
 def get_user_chain(uid):
-    if uid not in vector_stores:
-        # Load documents for the user, for now we use a static URL for the example
+    docs = load_vector_store(uid)
+    if not docs:
         pdf_url = 'https://utfs.io/f/27ca8fdc-1745-4f4c-b764-512c01392a29-uijmwi.pdf'
         docs = get_documents_from_pdf(pdf_url)
-        vectorStore = create_db(docs)
-        vector_stores[uid] = vectorStore
-    else:
-        vectorStore = vector_stores[uid]
+        save_vector_store(uid, docs)
     
-    return create_chain(vectorStore)
+    return create_chain_from_docs(docs)
 
 if __name__ == '__main__':
     uid = input("Enter user ID: ")
     chain = get_user_chain(uid)
-    chat_history = []
+    chat_history = load_chat_history(uid)
 
     while True:
         user_input = input("You: ")
@@ -159,5 +206,8 @@ if __name__ == '__main__':
         response = process_chat(chain, user_input, chat_history)
         chat_history.append(HumanMessage(content=user_input))
         chat_history.append(AIMessage(content=response))
+        save_chat_history(uid, chat_history)
         print("Chat history content is now:  ", chat_history)
         print("Assistant: ", response)
+
+db_conn.close()
