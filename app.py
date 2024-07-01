@@ -1,6 +1,8 @@
 from dotenv import load_dotenv
 load_dotenv()
 import os
+import pymupdf  # Alternative import for PyMuPDF
+import requests
 from langchain_ibm import WatsonxLLM
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain 
@@ -39,6 +41,34 @@ def get_documents_from_web(url):
     )
     splitDocs = splitter.split_documents(docs)
     return splitDocs
+
+
+def get_documents_from_pdf(pdf_path):
+    response = requests.get(pdf_path)
+    response.raise_for_status()
+
+    # Open the PDF file
+    pdf_document = pymupdf.open(stream=response.content, filetype="pdf")
+    text = ""
+
+    # Extract text from each page
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        text += page.get_text()
+
+    # Close the PDF file
+    pdf_document.close()
+
+    # Split the extracted text into chunks
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size = 400,
+        chunk_overlap = 20
+    )
+    splitDocs = splitter.create_documents([text])
+    print(splitDocs)
+    return splitDocs
+
+
 
 # def create_db(docs):
 #     embedding = OpenAIEmbeddings()
@@ -102,7 +132,11 @@ def process_chat(chain, question, chat_history):
     return response["answer"]
 
 if __name__ == '__main__':
-    docs = get_documents_from_web('https://python.langchain.com/docs/expression_language/')
+    # docs = get_documents_from_web('https://python.langchain.com/docs/expression_language/')
+    pdf_path = 'https://utfs.io/f/3b50d8c2-3b1f-42c3-a92f-d3e35a7a5812-uhg1ww.pdf'
+    
+    docs = get_documents_from_pdf(pdf_path)
+
     vectorStore = create_db(docs)
     chain = create_chain(vectorStore)
 
