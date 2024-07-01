@@ -1,5 +1,5 @@
-from dotenv import load_dotenv
-load_dotenv()
+from flask import Flask, request, jsonify
+from werkzeug.utils import secure_filename
 import os
 import pickle
 import pymupdf  # Alternative import for PyMuPDF
@@ -10,12 +10,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores.faiss import FAISS
-from langchain.chains import create_retrieval_chain 
+from langchain.chains.retrieval import create_retrieval_chain
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import MessagesPlaceholder
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
+
+app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'uploads'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 parameters = {
     "decoding_method": "greedy",
@@ -29,7 +33,7 @@ Wx_Api_Key = os.getenv("WX_API_KEY", None)
 Project_ID = os.getenv("PROJECT_ID", None)
 cloud_url = os.getenv("IBM_CLOUD_URL", None)
 
-db_conn = sqlite3.connect('vector_stores.db')
+db_conn = sqlite3.connect('vector_stores.db', check_same_thread=False)
 cursor = db_conn.cursor()
 
 # Create tables for storing vector stores and chat history
@@ -47,17 +51,6 @@ CREATE TABLE IF NOT EXISTS chat_history (
     message TEXT
 )
 ''')
-
-def get_documents_from_web(url):
-    loader = WebBaseLoader(url)
-    docs = loader.load()
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=400,
-        chunk_overlap=20
-    )
-    splitDocs = splitter.split_documents(docs)
-    return splitDocs
 
 def get_documents_from_pdf(pdf_url):
     response = requests.get(pdf_url)
@@ -81,14 +74,6 @@ def get_documents_from_pdf(pdf_url):
         chunk_overlap=20
     )
     splitDocs = splitter.create_documents([text])
-    return splitDocs
-
-def web_search_result(text):
-    wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
-    value = wikipedia.run(text)
-
-    splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=20)
-    splitDocs = splitter.split_documents(value)
     return splitDocs
 
 def create_db(docs):
@@ -184,30 +169,49 @@ def load_chat_history(uid):
             chat_history.append(AIMessage(content=message))
     return chat_history
 
-def get_user_chain(uid):
-    docs = load_vector_store(uid)
-    if not docs:
-        pdf_url = 'https://utfs.io/f/27ca8fdc-1745-4f4c-b764-512c01392a29-uijmwi.pdf'
-        docs = get_documents_from_pdf(pdf_url)
+def get_user_chain(uid, docs=None):
+    if docs:
         save_vector_store(uid, docs)
-    
+    else:
+        docs = load_vector_store(uid)
+    if not docs:
+        return None
     return create_chain_from_docs(docs)
 
-if __name__ == '__main__':
-    uid = input("Enter user ID: ")
-    chain = get_user_chain(uid)
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    data = request.json
+    uid = data.get('uid')
+    user_input = data.get('message')
+    pdf_url = data.get('pdf_url', None)
+    chain = None
+    print(pdf_url)
+    
+    if not uid or not user_input:
+        return jsonify({"error": "Invalid input"}), 400
+
+    if pdf_url:
+        docs = get_documents_from_pdf(pdf_url)
+        chain = get_user_chain(uid, docs)
+    else:
+        chain = get_user_chain(uid)
+        
+
+    if not chain:
+        return jsonify({"error": "No document found for user"}), 400
+    
     chat_history = load_chat_history(uid)
+    
+    response = process_chat(chain, user_input, chat_history)
+    chat_history.append(HumanMessage(content=user_input))
+    chat_history.append(AIMessage(content=response))
+    save_chat_history(uid, chat_history)
 
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() == 'exit':
-            break
+    return jsonify({"response": response})
 
-        response = process_chat(chain, user_input, chat_history)
-        chat_history.append(HumanMessage(content=user_input))
-        chat_history.append(AIMessage(content=response))
-        save_chat_history(uid, chat_history)
-        print("Chat history content is now:  ", chat_history)
-        print("Assistant: ", response)
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
 
 db_conn.close()
