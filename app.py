@@ -175,7 +175,8 @@ def get_user_chain(uid, docs=None):
     else:
         docs = load_vector_store(uid)
     if not docs:
-        return None
+        docs = [""]
+
     return create_chain_from_docs(docs)
 
 
@@ -185,8 +186,6 @@ def chat():
     uid = data.get('uid')
     user_input = data.get('message')
     pdf_url = data.get('pdf_url', None)
-    chain = None
-    print(pdf_url)
     
     if not uid or not user_input:
         return jsonify({"error": "Invalid input"}), 400
