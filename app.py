@@ -5,6 +5,9 @@ import pickle
 import pymupdf  # Alternative import for PyMuPDF
 import requests
 import sqlite3
+import tiktoken
+import markdown
+import pdfkit
 from langchain_ibm import WatsonxLLM, WatsonxEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain 
@@ -208,6 +211,158 @@ def chat():
     save_chat_history(uid, chat_history)
 
     return jsonify({"response": response})
+
+def extract_chapters_from_syllabus(syllabus_url):
+    response = requests.get(syllabus_url)
+    response.raise_for_status()
+    print(syllabus_url)
+    pdf_document = pymupdf.open(stream=response.content, filetype="pdf")
+    text = ""
+
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        text += page.get_text()
+
+    pdf_document.close()
+    parameters = {
+        "decoding_method": "greedy",
+        "max_new_tokens": 1024,
+        "min_new_tokens": 1,
+        "temperature": 0,
+        "repetition_penalty": 1
+    }
+    llm = WatsonxLLM(
+        model_id="meta-llama/llama-3-70b-instruct",
+        url=cloud_url,
+        project_id=Project_ID,
+        params=parameters,
+        apikey=Wx_Api_Key,
+        verbose=True
+    )
+    prompt = f"Breakdown the theorotical topics of from the following table of contents in a structured manner in the format; (x. Chapter Name ) Only give the data in this format; think step by step: {text}"
+    response = llm.invoke(prompt)
+    return response
+
+def extract_text_for_chapters(pdf_url, chapters):
+    response = requests.get(pdf_url)
+    response.raise_for_status()
+    pdf_document = pymupdf.open(stream=response.content, filetype="pdf")
+    text = ""
+    
+    chapter_texts = {}
+    
+    for chapter, page_range in chapters.items():
+        chapter_text = ""
+        start_page, end_page = page_range
+        for page_num in range(start_page - 1, end_page):
+            page = pdf_document.load_page(page_num)
+            chapter_text += page.get_text()
+        chapter_texts[chapter] = chapter_text
+    
+    pdf_document.close()
+    return chapter_texts
+
+
+def calculate_tokens(text):
+    encoding = tiktoken.get_encoding('cl100k_base')
+    num_tokens = len(encoding.encode(text))
+    return num_tokens
+
+def generate_notes_with_llm(text):
+    model = WatsonxLLM(
+        model_id="mistralai/mixtral-8x7b-instruct-v01",
+        url=cloud_url,
+        project_id=Project_ID,
+        params=parameters,
+        apikey=Wx_Api_Key,
+        verbose=True
+    )
+    prompt = f"Create notes from the following text: {text}"
+    response = model.invoke(prompt)
+    return response
+
+
+def summarize_text_with_llm(text):
+    model = WatsonxLLM(
+        model_id="mistralai/mixtral-8x7b-instruct-v01",
+        url=cloud_url,
+        project_id=Project_ID,
+        params=parameters,
+        apikey=Wx_Api_Key,
+        verbose=True
+    )
+    prompt = f"Summarize the following text to fit within 16000 tokens: {text}"
+    response = model.invoke(prompt)
+    return response["answer"]
+
+def save_notes_to_vector_store(uid, notes):
+    docs = [notes]
+    save_vector_store(uid, docs)
+
+
+def markdown_to_pdf(markdown_text, output_file):
+    html = markdown.markdown(markdown_text)
+    pdfkit.from_string(html, output_file)
+
+
+def generate_note_function(chapters, pdf_url, uid):
+    # take each page on pdf
+    response = requests.get(pdf_url)
+    response.raise_for_status()
+    pdf_document = pymupdf.open(stream=response.content, filetype="pdf")
+
+    text = ""
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        text += page.get_text()
+        # Calculate the number of tokens in the text to determine if it can be processed by the model in one go 
+        num_tokens = calculate_tokens(text)
+        if num_tokens > 16000:
+            notes = summarize_text_with_llm(text)
+            save_notes_to_vector_store(uid, notes)
+            text = ""
+        else:
+            notes = generate_notes_with_llm(text)
+            save_notes_to_vector_store(uid, notes)
+            text = ""
+    pdf_document.close()
+
+    # Extract text for each chapter; generate notes for each chapter
+    chapter_texts = chapters.split("\n")
+    total_notes = ""
+    for chapter in chapter_texts:
+        notes = generate_notes_with_llm(chapter)
+        total_notes += notes + "\n\n\n"
+    save_notes_to_vector_store(uid, total_notes)
+    markdown_to_pdf(total_notes, f"{uid}_notes.pdf")
+
+
+
+
+@app.route('/generate-notes', methods=['POST'])
+def generate_notes():
+    data = request.json
+    pdf_url = data.get('pdf_url')
+    uid = data.get('uid')
+    syllabus_url = data.get('syllabus_url')
+
+    if not pdf_url or not uid or not syllabus_url:
+        return jsonify({"error": "Invalid input"}), 400
+    
+    chapters = extract_chapters_from_syllabus(syllabus_url)
+    generate_note_function(chapters, pdf_url, uid)
+    return jsonify({"message": "Notes generated successfully"})
+    # chain = get_user_chain(uid)
+    # chat_history = load_chat_history(uid)
+    # docs = get_documents_from_pdf(pdf_url)
+    # save_vector_store(uid, docs)
+    # chain = get_user_chain(uid, docs)
+    # for chapter in chapters:
+    #     response = process_chat(chain, chapter, chat_history)
+    #     chat_history.append(HumanMessage(content=chapter))
+    #     chat_history.append(AIMessage(content=response))
+    #     save_chat_history(uid, chat_history)
+       
 
 
 if __name__ == '__main__':
