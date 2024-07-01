@@ -4,26 +4,18 @@ import os
 import pymupdf  # Alternative import for PyMuPDF
 import requests
 from langchain_ibm import WatsonxLLM, WatsonxEmbeddings
-# from langchain_ibm import ChatWatsonx
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain 
-from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, OpenAI
 from langchain_community.vectorstores.faiss import FAISS
 from langchain.chains import create_retrieval_chain 
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import MessagesPlaceholder
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
-# from google.generativeai import Embeddings
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_community.agent_toolkits.load_tools import load_tools
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
-
 from langchain import hub
 from langchain.agents import AgentExecutor, create_react_agent, load_tools
-
 
 parameters = {
     "decoding_method": "greedy",
@@ -37,50 +29,21 @@ Wx_Api_Key = os.getenv("WX_API_KEY", None)
 Project_ID = os.getenv("PROJECT_ID", None)
 cloud_url = os.getenv("IBM_CLOUD_URL", None)
 
+vector_stores = {}
 
 def get_documents_from_web(url):
     loader = WebBaseLoader(url)
     docs = loader.load()
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size = 400,
-        chunk_overlap = 20
+        chunk_size=400,
+        chunk_overlap=20
     )
     splitDocs = splitter.split_documents(docs)
     return splitDocs
 
-# def get_citation():
-#     llm = ChatWatsonx(
-#         model_id="ibm/granite-13b-chat-v2",
-#         url=cloud_url,
-#         project_id=Project_ID,
-#         params=parameters,
-#     )
-#     # llm = WatsonxLLM(
-#     #         model_id="meta-llama/llama-3-8b-instruct",
-#     #         # model_id="ibm-mistralai/mixtral-8x7b-instruct-v01-q",
-#     #         url=cloud_url,
-#     #         project_id=Project_ID,
-#     #         params=parameters,
-#     #         apikey=Wx_Api_Key,
-#     #         verbose=True
-#     #     )
-#     tools = load_tools(
-#         ["arxiv"],
-#     )
-#     prompt = hub.pull("hwchase17/react")
-
-#     agent = create_react_agent(llm, tools, prompt)
-#     agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-#     agent_executor.invoke(
-#         {
-#             "input": "What's the paper about Tamil LLaMA?",
-#         }
-#     )
-
-
-def get_documents_from_pdf(pdf_path):
-    response = requests.get(pdf_path)
+def get_documents_from_pdf(pdf_url):
+    response = requests.get(pdf_url)
     response.raise_for_status()
 
     # Open the PDF file
@@ -97,36 +60,23 @@ def get_documents_from_pdf(pdf_path):
 
     # Split the extracted text into chunks
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size = 400,
-        chunk_overlap = 20
+        chunk_size=400,
+        chunk_overlap=20
     )
     splitDocs = splitter.create_documents([text])
-    print(splitDocs)
     return splitDocs
 
 def web_search_result(text):
     wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
     value = wikipedia.run(text)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size = 400,
-        chunk_overlap = 20
-    )
+    splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=20)
     splitDocs = splitter.split_documents(value)
     return splitDocs
-    
-# def video_transcript_creator():
-
-
-# def create_db(docs):
-#     embedding = OpenAIEmbeddings()
-#     vectorStore = FAISS.from_documents(docs, embedding=embedding)
-#     return vectorStore
 
 def create_db(docs):
-    # embedding = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     embedding = WatsonxEmbeddings(
         model_id="ibm/slate-125m-english-rtrvr",
-            # model_id="ibm-mistralai/mixtral-8x7b-instruct-v01-q",
         url=cloud_url,
         project_id=Project_ID,
         params=parameters,
@@ -137,20 +87,19 @@ def create_db(docs):
 
 def create_chain(vectorStore):
     model = WatsonxLLM(
-            model_id="meta-llama/llama-3-70b-instruct",
-            #model_id="ibm-mistralai/mixtral-8x7b-instruct-v01-q",
-            url=cloud_url,
-            project_id=Project_ID,
-            params=parameters,
-            apikey=Wx_Api_Key,
-            verbose=True
-        )
+        model_id="meta-llama/llama-3-70b-instruct",
+        url=cloud_url,
+        project_id=Project_ID,
+        params=parameters,
+        apikey=Wx_Api_Key,
+        verbose=True
+    )
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Answer the user's question based on the context: {context} "),
         MessagesPlaceholder(variable_name='chat_history'),
         ("human", "{input}") 
-     ])
+    ])
     
     chain = create_stuff_documents_chain(
         llm=model,
@@ -172,7 +121,6 @@ def create_chain(vectorStore):
     )
 
     retriever_chain = create_retrieval_chain(
-        #retriever,
         history_aware_retriever,
         chain
     )
@@ -186,26 +134,23 @@ def process_chat(chain, question, chat_history):
     })
     return response["answer"]
 
-# if __name__ == '__main__':
-    # web_search_result()
-    # get_citation()
+def get_user_chain(uid):
+    if uid not in vector_stores:
+        # Load documents for the user, for now we use a static URL for the example
+        pdf_url = 'https://utfs.io/f/27ca8fdc-1745-4f4c-b764-512c01392a29-uijmwi.pdf'
+        docs = get_documents_from_pdf(pdf_url)
+        vectorStore = create_db(docs)
+        vector_stores[uid] = vectorStore
+    else:
+        vectorStore = vector_stores[uid]
+    
+    return create_chain(vectorStore)
 
 if __name__ == '__main__':
-    # docs = get_documents_from_web('https://python.langchain.com/docs/expression_language/')
-    pdf_path = 'https://utfs.io/f/27ca8fdc-1745-4f4c-b764-512c01392a29-uijmwi.pdf'
-    
-    docs = get_documents_from_pdf(pdf_path)
-
-
-    vectorStore = create_db(docs)
-    chain = create_chain(vectorStore)
-
-    # chat_history = [
-    #     HumanMessage(content='Hello'),
-    #     AIMessage(content="Hello, how can I assist you? "),
-    #     HumanMessage(content="My name is Girijesh")
-    # ]
+    uid = input("Enter user ID: ")
+    chain = get_user_chain(uid)
     chat_history = []
+
     while True:
         user_input = input("You: ")
         if user_input.lower() == 'exit':
